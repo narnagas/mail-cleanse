@@ -1,3 +1,5 @@
+using Xunit;
+
 namespace MailCleanse.Tests;
 
 public sealed class SmokeTests
