@@ -1,5 +1,6 @@
 using MailCleanse.Core.Abstractions;
 using MailCleanse.Infrastructure;
+using MailKit.Security;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,14 +28,27 @@ app.MapGet("/api/mail/scan", async (
     if (maxMessages is < 1 or > 500)
         return Results.BadRequest(new { error = "limit must be between 1 and 500." });
 
-    var messages = await mailbox.ScanAsync(maxMessages, cancellationToken);
-
-    return Results.Ok(new
+    try
     {
-        count = messages.Count,
-        scanOnly = true,
-        messages
-    });
+        var messages = await mailbox.ScanAsync(maxMessages, cancellationToken);
+
+        return Results.Ok(new
+        {
+            count = messages.Count,
+            scanOnly = true,
+            messages
+        });
+    }
+    catch (AuthenticationException)
+    {
+        return Results.Json(
+            new
+            {
+                error = "Yahoo authentication failed.",
+                detail = "Check the server log for the authentication mechanisms advertised by Yahoo. The password is never logged."
+            },
+            statusCode: StatusCodes.Status401Unauthorized);
+    }
 });
 
 app.Run();
