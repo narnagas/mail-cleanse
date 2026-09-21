@@ -3,13 +3,17 @@ using MailCleanse.Core.Models;
 using MailKit;
 using MailKit.Net.Imap;
 using MailKit.Security;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
 namespace MailCleanse.Infrastructure.Yahoo;
 
-public sealed class YahooMailboxReader(IOptions<YahooMailOptions> options) : IMailboxReader
+public sealed class YahooMailboxReader(
+    IOptions<YahooMailOptions> options,
+    ILogger<YahooMailboxReader> logger) : IMailboxReader
 {
     private readonly YahooMailOptions _options = options.Value;
+    private readonly ILogger<YahooMailboxReader> _logger = logger;
 
     public async Task<IReadOnlyList<MailMessageSummary>> ScanAsync(
         int maxMessages,
@@ -28,10 +32,33 @@ public sealed class YahooMailboxReader(IOptions<YahooMailOptions> options) : IMa
             _options.UseSsl ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls,
             cancellationToken);
 
-        await client.AuthenticateAsync(
+        _logger.LogInformation(
+            "Connected to Yahoo IMAP. Host={Host}, Port={Port}, SSL={UseSsl}, User={Username}, PasswordConfigured={PasswordConfigured}, PasswordLength={PasswordLength}, AuthenticationMechanisms={AuthenticationMechanisms}",
+            _options.Host,
+            _options.Port,
+            _options.UseSsl,
             _options.Username,
-            _options.AppPassword,
-            cancellationToken);
+            !string.IsNullOrEmpty(_options.AppPassword),
+            _options.AppPassword.Length,
+            string.Join(", ", client.AuthenticationMechanisms.OrderBy(x => x)));
+
+        try
+        {
+            await client.AuthenticateAsync(
+                _options.Username,
+                _options.AppPassword,
+                cancellationToken);
+        }
+        catch (AuthenticationException ex)
+        {
+            _logger.LogError(
+                ex,
+                "Yahoo IMAP authentication failed for {Username}. Advertised mechanisms: {AuthenticationMechanisms}",
+                _options.Username,
+                string.Join(", ", client.AuthenticationMechanisms.OrderBy(x => x)));
+
+            throw;
+        }
 
         var inbox = client.Inbox;
         await inbox.OpenAsync(FolderAccess.ReadOnly, cancellationToken);
