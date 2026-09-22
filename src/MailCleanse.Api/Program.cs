@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Options;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -59,6 +60,102 @@ app.MapGet("/auth/yahoo", (IOptions<YahooOAuthOptions> options) =>
         });
 
     return Results.Redirect(authorizationUrl);
+});
+
+app.MapGet("/auth/yahoo/callback", async (
+    string? code,
+    string? state,
+    string? error,
+    string? error_description,
+    IOptions<YahooOAuthOptions> options,
+    CancellationToken cancellationToken) =>
+{
+    if (!string.IsNullOrWhiteSpace(error))
+    {
+        return Results.BadRequest(new
+        {
+            authenticated = false,
+            error,
+            errorDescription = error_description
+        });
+    }
+
+    if (string.IsNullOrWhiteSpace(code) || string.IsNullOrWhiteSpace(state))
+        return Results.BadRequest(new { authenticated = false, error = "Missing authorization code or state." });
+
+    if (!YahooPkceState.TryTake(state, out var codeVerifier) ||
+        string.IsNullOrWhiteSpace(codeVerifier))
+    {
+        return Results.BadRequest(new
+        {
+            authenticated = false,
+            error = "OAuth state is invalid, expired, or has already been used."
+        });
+    }
+
+    var oauth = options.Value;
+
+    using var httpClient = new HttpClient();
+
+    using var tokenRequest = new HttpRequestMessage(HttpMethod.Post, oauth.TokenEndpoint)
+    {
+        Content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["grant_type"] = "authorization_code",
+            ["client_id"] = oauth.ClientId,
+            ["redirect_uri"] = oauth.RedirectUri,
+            ["code"] = code,
+            ["code_verifier"] = codeVerifier
+        })
+    };
+
+    using var tokenResponse = await httpClient.SendAsync(tokenRequest, cancellationToken);
+    var tokenJson = await tokenResponse.Content.ReadAsStringAsync(cancellationToken);
+
+    if (!tokenResponse.IsSuccessStatusCode)
+    {
+        return Results.Json(
+            new
+            {
+                authenticated = false,
+                error = "Yahoo token exchange failed.",
+                statusCode = (int)tokenResponse.StatusCode
+            },
+            statusCode: StatusCodes.Status502BadGateway);
+    }
+
+    using var document = JsonDocument.Parse(tokenJson);
+    var root = document.RootElement;
+
+    var accessTokenReceived =
+        root.TryGetProperty("access_token", out var accessToken) &&
+        !string.IsNullOrWhiteSpace(accessToken.GetString());
+
+    var refreshTokenReceived =
+        root.TryGetProperty("refresh_token", out var refreshToken) &&
+        !string.IsNullOrWhiteSpace(refreshToken.GetString());
+
+    var tokenType =
+        root.TryGetProperty("token_type", out var tokenTypeElement)
+            ? tokenTypeElement.GetString()
+            : null;
+
+    long? expiresIn = null;
+    if (root.TryGetProperty("expires_in", out var expiresElement) &&
+        expiresElement.TryGetInt64(out var seconds))
+    {
+        expiresIn = seconds;
+    }
+
+    return Results.Ok(new
+    {
+        authenticated = accessTokenReceived,
+        tokenType,
+        accessTokenReceived,
+        refreshTokenReceived,
+        expiresIn,
+        note = "Tokens were received only for this diagnostic and were not logged or persisted."
+    });
 });
 
 app.MapGet("/api/mail/scan", async (
