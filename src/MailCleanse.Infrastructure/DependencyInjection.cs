@@ -15,6 +15,10 @@ public static class DependencyInjection
             .AddOptions<YahooMailOptions>()
             .Bind(configuration.GetSection(YahooMailOptions.SectionName));
 
+        services
+            .AddOptions<YahooOAuthOptions>()
+            .Bind(configuration.GetSection(YahooOAuthOptions.SectionName));
+
         services.AddScoped<IMailboxReader, YahooMailboxReader>();
 
         return services;
