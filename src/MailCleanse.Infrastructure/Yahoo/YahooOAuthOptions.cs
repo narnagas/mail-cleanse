@@ -8,5 +8,5 @@ public sealed class YahooOAuthOptions
     public string RedirectUri { get; init; } = string.Empty;
     public string AuthorizationEndpoint { get; init; } = "https://api.login.yahoo.com/oauth2/request_auth";
     public string TokenEndpoint { get; init; } = "https://api.login.yahoo.com/oauth2/get_token";
-    public string Scope { get; init; } = "openid mail-r";
+    public string Scope { get; init; } = "openid email profile";
 }
