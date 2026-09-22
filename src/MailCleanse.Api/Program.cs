@@ -1,6 +1,11 @@
 using MailCleanse.Core.Abstractions;
 using MailCleanse.Infrastructure;
+using MailCleanse.Infrastructure.Yahoo;
 using MailKit.Security;
+using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Extensions.Options;
+using System.Security.Cryptography;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -17,6 +22,44 @@ app.MapGet("/", () => Results.Ok(new
 }));
 
 app.MapGet("/health", () => Results.Ok(new { status = "healthy" }));
+
+app.MapGet("/auth/yahoo", (IOptions<YahooOAuthOptions> options) =>
+{
+    var oauth = options.Value;
+
+    if (string.IsNullOrWhiteSpace(oauth.ClientId))
+        return Results.Problem("Yahoo OAuth ClientId is not configured.");
+
+    if (string.IsNullOrWhiteSpace(oauth.RedirectUri))
+        return Results.Problem("Yahoo OAuth RedirectUri is not configured.");
+
+    var state = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
+    var nonce = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(32));
+    var codeVerifier = WebEncoders.Base64UrlEncode(RandomNumberGenerator.GetBytes(64));
+    var challengeBytes = SHA256.HashData(Encoding.ASCII.GetBytes(codeVerifier));
+    var codeChallenge = WebEncoders.Base64UrlEncode(challengeBytes);
+
+    // Temporary development-only storage for the next callback step.
+    // This is intentionally process-local and will be replaced with a proper
+    // short-lived OAuth state store before production use.
+    YahooPkceState.Store(state, codeVerifier);
+
+    var authorizationUrl = QueryHelpers.AddQueryString(
+        oauth.AuthorizationEndpoint,
+        new Dictionary<string, string?>
+        {
+            ["client_id"] = oauth.ClientId,
+            ["redirect_uri"] = oauth.RedirectUri,
+            ["response_type"] = "code",
+            ["scope"] = oauth.Scope,
+            ["state"] = state,
+            ["nonce"] = nonce,
+            ["code_challenge"] = codeChallenge,
+            ["code_challenge_method"] = "S256"
+        });
+
+    return Results.Redirect(authorizationUrl);
+});
 
 app.MapGet("/api/mail/scan", async (
     int? limit,
@@ -52,3 +95,33 @@ app.MapGet("/api/mail/scan", async (
 });
 
 app.Run();
+
+
+internal static class YahooPkceState
+{
+    private static readonly Dictionary<string, string> Values = new();
+    private static readonly object Sync = new();
+
+    public static void Store(string state, string codeVerifier)
+    {
+        lock (Sync)
+        {
+            Values[state] = codeVerifier;
+        }
+    }
+
+    public static bool TryTake(string state, out string? codeVerifier)
+    {
+        lock (Sync)
+        {
+            if (!Values.Remove(state, out var value))
+            {
+                codeVerifier = null;
+                return false;
+            }
+
+            codeVerifier = value;
+            return true;
+        }
+    }
+}
